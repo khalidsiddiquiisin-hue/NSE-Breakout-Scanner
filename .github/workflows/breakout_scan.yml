@@ -1,0 +1,29 @@
+name: NSE Breakout Scanner
+
+on:
+  workflow_dispatch: {}   # manual trigger from Actions tab, and via cron-job.org
+
+permissions:
+  contents: read   # bump to write later if we add state-file persistence
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install pandas numpy requests
+
+      - name: Run scanner
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python3 resistance_breakout_scanner.py RELIANCE TCS TATASTEEL HDFCBANK ITC
+        # NOTE: placeholder symbol list -- swap for the real universe once
+        # the stock-list decision (Nifty 500 / Total Market / custom) is locked.
