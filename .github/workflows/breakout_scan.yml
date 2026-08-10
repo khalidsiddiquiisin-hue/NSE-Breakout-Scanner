@@ -1,7 +1,16 @@
 name: NSE Breakout Scanner
 
 on:
-  workflow_dispatch: {}   # manual trigger from Actions tab, and via cron-job.org
+  workflow_dispatch:
+    inputs:
+      symbols:
+        description: "Comma-separated symbols (e.g. RELIANCE,TCS,ITC)"
+        required: false
+        default: "RELIANCE,TCS,TATASTEEL,HDFCBANK,ITC"
+      years:
+        description: "Years of history to pull (use a small number like 1-2 for a quick sanity test)"
+        required: false
+        default: "20"
 
 permissions:
   contents: read   # bump to write later if we add state-file persistence
@@ -24,6 +33,6 @@ jobs:
       - name: Run scanner
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        run: python3 resistance_breakout_scanner.py RELIANCE TCS TATASTEEL HDFCBANK ITC
-        # NOTE: placeholder symbol list -- swap for the real universe once
-        # the stock-list decision (Nifty 500 / Total Market / custom) is locked.
+          SCANNER_SYMBOLS: ${{ inputs.symbols }}
+          SCANNER_YEARS: ${{ inputs.years }}
+        run: python3 resistance_breakout_scanner.py
