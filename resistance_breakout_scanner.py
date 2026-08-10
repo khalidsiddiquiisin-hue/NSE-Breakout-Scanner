@@ -99,6 +99,7 @@ def fetch_history(symbol: str, years: int = 20, session=None, cache_dir: str = N
     start = end - timedelta(days=years * 365)
 
     rows = []
+    n_ok, n_fail, n_no_symbol = 0, 0, 0
     d = start
     while d <= end:
         if d.weekday() < 5:  # skip Sat/Sun; holidays will just 404/error and get skipped
@@ -112,16 +113,23 @@ def fetch_history(symbol: str, years: int = 20, session=None, cache_dir: str = N
                         "date": d, "Open": r["OPEN"], "High": r["HIGH"], "Low": r["LOW"],
                         "Close": r["CLOSE"], "Volume": r["VOLUME"], "DeliveryPct": r["DELIV_PER"],
                     })
+                    n_ok += 1
+                else:
+                    n_no_symbol += 1  # file fetched fine, symbol just wasn't listed/traded that day
             except Exception:
-                pass  # holiday (404) or transient issue -- skip this day
+                n_fail += 1  # holiday (404) or transient issue -- skip this day
             time.sleep(0.25)  # be polite to NSE's archive
         d += timedelta(days=1)
+
+    print(f"  [{sym}] fetch summary: {n_ok} days OK, {n_fail} fetch failures, "
+          f"{n_no_symbol} days symbol not found in bhavcopy")
 
     if not rows:
         return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume", "DeliveryPct"])
 
     df = pd.DataFrame(rows).set_index("date").sort_index()
     df = df.dropna(subset=["Close", "Volume"])
+    print(f"  [{sym}] usable history: {len(df)} rows, {df.index.min()} to {df.index.max()}")
     return df
 
 
@@ -294,15 +302,23 @@ def scan_symbol_full(symbol: str, years_history: int = 20, **kwargs) -> pd.DataF
 
 
 if __name__ == "__main__":
+    import os
     import sys
     # Usage: python3 resistance_breakout_scanner.py SYMBOL1 SYMBOL2 ...
-    symbols = sys.argv[1:] or ["RELIANCE", "TCS", "INFY"]  # placeholder list, swap for your own
+    # Or set env vars SCANNER_SYMBOLS="SYM1,SYM2" and SCANNER_YEARS=3 to override
+    # without editing this file (used by the GitHub Actions workflow_dispatch inputs).
+    env_symbols = os.environ.get("SCANNER_SYMBOLS", "").strip()
+    symbols = [s.strip().upper() for s in env_symbols.split(",") if s.strip()] \
+        if env_symbols else (sys.argv[1:] or ["RELIANCE", "TCS", "INFY"])
+    years = int(os.environ.get("SCANNER_YEARS", "20"))
+
+    print(f"Scanning {len(symbols)} symbol(s), {years} year(s) history each: {symbols}")
     sess = _nse_session()
 
     for sym in symbols:
         print(f"\nScanning {sym} ...")
         try:
-            events = scan_symbol(sym, years_history=20, session=sess)
+            events = scan_symbol(sym, years_history=years, session=sess)
         except Exception as e:
             print(f"  [error] {sym}: {e}")
             continue
