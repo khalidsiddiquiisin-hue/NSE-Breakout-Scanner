@@ -1,13 +1,18 @@
 """
-NSE Multi-Year Resistance Breakout Scanner — v0.4
+NSE Multi-Year Resistance Breakout Scanner — v0.5
 ======================================================
 Changelog:
+  v0.5 - Added support for NSE's LEGACY pre-2019 bhavcopy zip archive format
+         (archives.nseindia.com), confirmed reachable back to at least 2010.
+         fetch_history() now automatically routes to legacy vs modern format
+         based on date (cutover: 23-Aug-2019). This fixes the ~7-year data
+         ceiling from v0.4 -- resistance-age checks can now see much further
+         back. Legacy format has no delivery%, which is fine since delivery%
+         is only ever checked on the (recent) breakout day.
   v0.4 - Confirmed via GitHub Actions test: NSE's bhavcopy archive (static files)
          is reachable, but the interactive historical API is blocked by Akamai
          bot-mitigation on cloud IPs (Oracle VM included). Dropped the historical
-         API entirely — price/volume/delivery% now all come from the same daily
-         bhavcopy file. This also means this scanner should run on GitHub Actions,
-         not the Oracle VM, going forward.
+         API entirely.
   v0.3 - Dropped Yahoo/yfinance entirely (Oracle Cloud IPs get 429-rate-limited by
          Yahoo's edge).
   v0.2 - Added Phase 2: delivery% confirmation via NSE bhavcopy, checked only
@@ -41,7 +46,7 @@ any machine with normal internet access to actually fetch data.
 """
 
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from typing import Dict, Optional
 
 import numpy as np
@@ -107,7 +112,7 @@ def fetch_history(symbol: str, years: int = 20, session=None, cache_dir: str = N
 
     def _try_day(d):
         try:
-            bhav = fetch_nse_delivery_bhavcopy(d, session=sess)
+            bhav = fetch_bhavcopy_any_era(d, session=sess)
             return bhav
         except Exception:
             return None
@@ -138,7 +143,7 @@ def fetch_history(symbol: str, years: int = 20, session=None, cache_dir: str = N
         for d in failed_days:
             bhav = None
             try:
-                bhav = fetch_nse_delivery_bhavcopy(d, session=sess2)
+                bhav = fetch_bhavcopy_any_era(d, session=sess2)
             except Exception:
                 pass
             if bhav is not None:
@@ -319,6 +324,78 @@ def fetch_nse_delivery_bhavcopy(date, session=None) -> pd.DataFrame:
 
     _delivery_cache[cache_key] = df
     return df
+
+
+def fetch_legacy_bhavcopy(date, session=None) -> pd.DataFrame:
+    """
+    Fetch NSE's LEGACY bhavcopy zip archive (pre-~2019 era format) for a single
+    trading date. Confirmed reachable back to at least 2010 (NSE's public docs
+    suggest this format goes back to 1994). Contains OHLCV but NOT delivery% --
+    that's fine, since delivery% is only ever checked on the (recent) breakout
+    day, which will always fall within the modern format's coverage.
+
+    Returns a DataFrame indexed by symbol with columns OPEN, HIGH, LOW, CLOSE, VOLUME, DELIV_PER (NaN).
+    """
+    import zipfile
+    from io import BytesIO
+
+    if isinstance(date, str):
+        date = datetime.strptime(date, "%d-%m-%Y").date()
+    elif isinstance(date, datetime):
+        date = date.date()
+
+    cache_key = "LEGACY_" + date.strftime("%d%m%Y")
+    if cache_key in _delivery_cache:
+        return _delivery_cache[cache_key]
+
+    month = date.strftime("%b").upper()
+    url = (f"https://archives.nseindia.com/content/historical/EQUITIES/"
+           f"{date.year}/{month}/cm{date.strftime('%d')}{month}{date.year}bhav.csv.zip")
+
+    sess = session or _nse_session()
+    resp = sess.get(url, timeout=15)
+    resp.raise_for_status()
+
+    with zipfile.ZipFile(BytesIO(resp.content)) as zf:
+        csv_name = zf.namelist()[0]
+        with zf.open(csv_name) as f:
+            df = pd.read_csv(f)
+
+    df.columns = [c.strip() for c in df.columns]
+    df["SYMBOL"] = df["SYMBOL"].str.strip()
+    df["SERIES"] = df["SERIES"].str.strip()
+    df = df[df["SERIES"] == "EQ"]
+
+    df["OPEN"] = pd.to_numeric(df["OPEN"], errors="coerce")
+    df["HIGH"] = pd.to_numeric(df["HIGH"], errors="coerce")
+    df["LOW"] = pd.to_numeric(df["LOW"], errors="coerce")
+    df["CLOSE"] = pd.to_numeric(df["CLOSE"], errors="coerce")
+    df["VOLUME"] = pd.to_numeric(df["TOTTRDQTY"], errors="coerce")
+    df["DELIV_PER"] = np.nan  # not available in this legacy format
+
+    df = df.set_index("SYMBOL")[["OPEN", "HIGH", "LOW", "CLOSE", "VOLUME", "DELIV_PER"]]
+
+    _delivery_cache[cache_key] = df
+    return df
+
+
+# Dates on/after this use the modern sec_bhavdata_full format (has delivery%).
+# Dates before it fall back to the legacy zip format (no delivery%, not needed
+# for old dates -- see fetch_legacy_bhavcopy docstring).
+MODERN_FORMAT_CUTOVER = date(2019, 8, 23)
+
+
+def fetch_bhavcopy_any_era(d, session=None) -> pd.DataFrame:
+    """Routes to the modern or legacy bhavcopy fetcher depending on date."""
+    if isinstance(d, str):
+        d = datetime.strptime(d, "%d-%m-%Y").date()
+    elif isinstance(d, datetime):
+        d = d.date()
+
+    if d >= MODERN_FORMAT_CUTOVER:
+        return fetch_nse_delivery_bhavcopy(d, session=session)
+    else:
+        return fetch_legacy_bhavcopy(d, session=session)
 
 
 def confirm_delivery(events: pd.DataFrame, symbol: str, session=None,
