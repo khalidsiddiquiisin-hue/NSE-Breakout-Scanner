@@ -35,4 +35,5 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           SCANNER_SYMBOLS: ${{ inputs.symbols }}
           SCANNER_YEARS: ${{ inputs.years }}
-        run: python3 resistance_breakout_scanner.py
+          PYTHONUNBUFFERED: "1"
+        run: python3 -u resistance_breakout_scanner.py
