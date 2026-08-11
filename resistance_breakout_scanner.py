@@ -98,31 +98,67 @@ def fetch_history(symbol: str, years: int = 20, session=None, cache_dir: str = N
     end = datetime.today().date()
     start = end - timedelta(days=years * 365)
 
+    trading_days = [start + timedelta(days=i) for i in range((end - start).days + 1)
+                     if (start + timedelta(days=i)).weekday() < 5]
+
     rows = []
-    n_ok, n_fail, n_no_symbol = 0, 0, 0
-    d = start
-    while d <= end:
-        if d.weekday() < 5:  # skip Sat/Sun; holidays will just 404/error and get skipped
+    failed_days = []
+    n_ok, n_no_symbol = 0, 0
+
+    def _try_day(d):
+        try:
+            bhav = fetch_nse_delivery_bhavcopy(d, session=sess)
+            return bhav
+        except Exception:
+            return None
+
+    for d in trading_days:
+        bhav = _try_day(d)
+        if bhav is None:
+            failed_days.append(d)
+        elif sym in bhav.index:
+            r = bhav.loc[sym]
+            if isinstance(r, pd.DataFrame):
+                r = r.iloc[0]
+            rows.append({"date": d, "Open": r["OPEN"], "High": r["HIGH"], "Low": r["LOW"],
+                         "Close": r["CLOSE"], "Volume": r["VOLUME"], "DeliveryPct": r["DELIV_PER"]})
+            n_ok += 1
+        else:
+            n_no_symbol += 1
+        time.sleep(0.25)
+
+    # Second pass: retry failed days once, in case it was a temporary block that's
+    # since lifted (observed behavior: early-run failures, later-run successes).
+    n_recovered = 0
+    still_failed = []
+    if failed_days:
+        print(f"  [{sym}] retrying {len(failed_days)} failed day(s) with a fresh session...")
+        sess2 = _nse_session()
+        time.sleep(2)  # give any rate limit a moment before hammering it again
+        for d in failed_days:
+            bhav = None
             try:
-                bhav = fetch_nse_delivery_bhavcopy(d, session=sess)
+                bhav = fetch_nse_delivery_bhavcopy(d, session=sess2)
+            except Exception:
+                pass
+            if bhav is not None:
+                n_recovered += 1
                 if sym in bhav.index:
                     r = bhav.loc[sym]
-                    if isinstance(r, pd.DataFrame):  # guard against duplicate index
+                    if isinstance(r, pd.DataFrame):
                         r = r.iloc[0]
-                    rows.append({
-                        "date": d, "Open": r["OPEN"], "High": r["HIGH"], "Low": r["LOW"],
-                        "Close": r["CLOSE"], "Volume": r["VOLUME"], "DeliveryPct": r["DELIV_PER"],
-                    })
+                    rows.append({"date": d, "Open": r["OPEN"], "High": r["HIGH"], "Low": r["LOW"],
+                                 "Close": r["CLOSE"], "Volume": r["VOLUME"], "DeliveryPct": r["DELIV_PER"]})
                     n_ok += 1
                 else:
-                    n_no_symbol += 1  # file fetched fine, symbol just wasn't listed/traded that day
-            except Exception:
-                n_fail += 1  # holiday (404) or transient issue -- skip this day
-            time.sleep(0.25)  # be polite to NSE's archive
-        d += timedelta(days=1)
+                    n_no_symbol += 1
+            else:
+                still_failed.append(d)
+            time.sleep(0.4)
 
-    print(f"  [{sym}] fetch summary: {n_ok} days OK, {n_fail} fetch failures, "
-          f"{n_no_symbol} days symbol not found in bhavcopy")
+    n_fail = len(still_failed)
+    print(f"  [{sym}] fetch summary: {n_ok} days OK, {n_fail} still-failed after retry "
+          f"({n_recovered} recovered on retry), {n_no_symbol} days symbol not found in bhavcopy")
 
     if not rows:
         return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume", "DeliveryPct"])
