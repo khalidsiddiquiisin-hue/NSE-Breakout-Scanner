@@ -1,0 +1,19 @@
+name: Test NSE Bhavcopy Date Range
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  test-dates:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test a spread of historical dates
+        run: |
+          for d in 10082026 10082024 10082022 10082020 10082019 10082018 10082017 10082015 10082012 10082010; do
+            echo "--- $d ---"
+            curl -s -o /tmp/test_$d.csv -w "HTTP %{http_code}, size: %{size_download} bytes\n" \
+              "https://nsearchives.nseindia.com/products/content/sec_bhavdata_full_$d.csv"
+            head -c 150 /tmp/test_$d.csv
+            echo ""
+            echo ""
+          done
