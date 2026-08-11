@@ -21,15 +21,26 @@ jobs:
           head -3 /tmp/bhav_test.csv || echo "no file"
 
           echo ""
-          echo "--- legacy archive format (pre-2019 era), testing 15-AUG-2018 ---"
+          echo "--- legacy archive format (pre-2019 era), testing 16-AUG-2018 (Thu, valid trading day) ---"
           curl -s -o /tmp/legacy_test.zip -w "HTTP %{http_code}\n" \
-            "https://archives.nseindia.com/content/historical/EQUITIES/2018/AUG/cm15AUG2018bhav.csv.zip" || echo "FAILED"
+            "https://archives.nseindia.com/content/historical/EQUITIES/2018/AUG/cm16AUG2018bhav.csv.zip" || echo "FAILED"
           file /tmp/legacy_test.zip || echo "no file"
           echo "size: $(wc -c < /tmp/legacy_test.zip 2>/dev/null || echo 0) bytes"
 
           echo ""
-          echo "--- legacy archive format, testing 15-AUG-2010 ---"
-          curl -s -o /tmp/legacy_test2.zip -w "HTTP %{http_code}\n" \
+          echo "--- legacy archive, same date, WITH browser headers ---"
+          curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
+            -H "Referer: https://www.nseindia.com/" \
+            -o /tmp/legacy_test_ua.zip -w "HTTP %{http_code}\n" \
+            "https://archives.nseindia.com/content/historical/EQUITIES/2018/AUG/cm16AUG2018bhav.csv.zip" || echo "FAILED"
+          file /tmp/legacy_test_ua.zip || echo "no file"
+          echo "size: $(wc -c < /tmp/legacy_test_ua.zip 2>/dev/null || echo 0) bytes"
+
+          echo ""
+          echo "--- legacy archive format, testing 16-AUG-2010 (Mon, valid trading day), WITH browser headers ---"
+          curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
+            -H "Referer: https://www.nseindia.com/" \
+            -o /tmp/legacy_test2.zip -w "HTTP %{http_code}\n" \
             "https://archives.nseindia.com/content/historical/EQUITIES/2010/AUG/cm16AUG2010bhav.csv.zip" || echo "FAILED"
           file /tmp/legacy_test2.zip || echo "no file"
           echo "size: $(wc -c < /tmp/legacy_test2.zip 2>/dev/null || echo 0) bytes"
