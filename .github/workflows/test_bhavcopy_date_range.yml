@@ -9,10 +9,17 @@ jobs:
     steps:
       - name: Test a spread of historical dates
         run: |
+          set +e  # don't abort the whole loop on one failed curl call
           for d in 10082026 10082024 10082022 10082020 10082019 10082018 10082017 10082015 10082012 10082010; do
             echo "--- $d ---"
-            curl -s -o /tmp/test_$d.csv -w "HTTP %{http_code}, size: %{size_download} bytes\n" \
-              "https://nsearchives.nseindia.com/products/content/sec_bhavdata_full_$d.csv"
+            for attempt in 1 2 3; do
+              code=$(curl -s -o /tmp/test_$d.csv -w "%{http_code}" \
+                "https://nsearchives.nseindia.com/products/content/sec_bhavdata_full_$d.csv")
+              size=$(wc -c < /tmp/test_$d.csv)
+              echo "attempt $attempt: HTTP $code, size: $size bytes"
+              if [ "$code" = "200" ]; then break; fi
+              sleep 1
+            done
             head -c 150 /tmp/test_$d.csv
             echo ""
             echo ""
