@@ -1,0 +1,48 @@
+name: Test NSE Connectivity
+
+on:
+  workflow_dispatch:  # manual trigger only, from the Actions tab
+
+jobs:
+  test-nse:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test main NSE domain
+        run: |
+          echo "--- www.nseindia.com ---"
+          curl -s -o /dev/null -w "HTTP %{http_code}\n" "https://www.nseindia.com" || echo "FAILED"
+
+      - name: Test NSE bhavcopy archive
+        run: |
+          echo "--- nsearchives.nseindia.com (current format, 2019+) ---"
+          curl -s -o /tmp/bhav_test.csv -w "HTTP %{http_code}\n" \
+            "https://nsearchives.nseindia.com/products/content/sec_bhavdata_full_07082026.csv" || echo "FAILED"
+          echo "--- first 3 lines of response ---"
+          head -3 /tmp/bhav_test.csv || echo "no file"
+
+          echo ""
+          echo "--- legacy archive format (pre-2019 era), testing 15-AUG-2018 ---"
+          curl -s -o /tmp/legacy_test.zip -w "HTTP %{http_code}\n" \
+            "https://archives.nseindia.com/content/historical/EQUITIES/2018/AUG/cm15AUG2018bhav.csv.zip" || echo "FAILED"
+          file /tmp/legacy_test.zip || echo "no file"
+          echo "size: $(wc -c < /tmp/legacy_test.zip 2>/dev/null || echo 0) bytes"
+
+          echo ""
+          echo "--- legacy archive format, testing 15-AUG-2010 ---"
+          curl -s -o /tmp/legacy_test2.zip -w "HTTP %{http_code}\n" \
+            "https://archives.nseindia.com/content/historical/EQUITIES/2010/AUG/cm16AUG2010bhav.csv.zip" || echo "FAILED"
+          file /tmp/legacy_test2.zip || echo "no file"
+          echo "size: $(wc -c < /tmp/legacy_test2.zip 2>/dev/null || echo 0) bytes"
+
+      - name: Test NSE historical API (with session warmup)
+        run: |
+          echo "--- api.nseindia.com/api/historical (with cookie handshake) ---"
+          curl -s -c /tmp/cookies.txt -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
+            "https://www.nseindia.com" -o /dev/null -w "warmup: HTTP %{http_code}\n"
+          sleep 1
+          curl -s -b /tmp/cookies.txt -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
+            -H "Accept: application/json" \
+            "https://www.nseindia.com/api/historical/cm/equity?symbol=TATASTEEL&series=[%22EQ%22]&from=01-01-2026&to=10-08-2026" \
+            -o /tmp/hist_test.json -w "history: HTTP %{http_code}\n"
+          echo "--- first 300 chars of response ---"
+          head -c 300 /tmp/hist_test.json || echo "no file"
