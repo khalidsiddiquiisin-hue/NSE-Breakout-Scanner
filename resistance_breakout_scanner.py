@@ -304,6 +304,7 @@ def scan_symbol_full(symbol: str, years_history: int = 20, **kwargs) -> pd.DataF
 if __name__ == "__main__":
     import os
     import sys
+    sys.stdout.reconfigure(line_buffering=True)  # ensure prints stream out in real time in CI logs
     # Usage: python3 resistance_breakout_scanner.py SYMBOL1 SYMBOL2 ...
     # Or set env vars SCANNER_SYMBOLS="SYM1,SYM2" and SCANNER_YEARS=3 to override
     # without editing this file (used by the GitHub Actions workflow_dispatch inputs).
