@@ -83,28 +83,48 @@ def _nse_session() -> "requests.Session":
     return s
 
 
-def fetch_history(symbol: str, years: int = 20, session=None, cache_dir: str = None) -> pd.DataFrame:
+def fetch_history(symbol: str, years: int = 20, session=None, cache_dir: str = "data") -> pd.DataFrame:
     """
     Build daily OHLCV (+ delivery%) history for an NSE symbol from NSE's own
     bhavcopy archive — one file per trading day, each covering every symbol.
     (Not from the interactive historical API — that's blocked by Akamai
     bot-mitigation on most cloud/VM IPs; the static archive files are not.)
 
+    CACHING: if cache_dir is set (default "data"), this loads any previously
+    saved history for this symbol from {cache_dir}/{SYMBOL}.csv, fetches ONLY
+    the trading days not already cached, and writes the merged result back.
+    On a fresh symbol this is just as slow as before; on a repeat run it's
+    close to instant. The GitHub Actions workflow commits this directory back
+    to the repo after each run so the cache persists between runs.
+
     Symbol should be the bare NSE symbol, e.g. 'TATASTEEL' (no .NS suffix).
-    NOTE: this makes ~1 request per trading day in the window (~250/year), since
-    each bhavcopy file only covers one day. For Phase 3 (many symbols), call
-    fetch_nse_delivery_bhavcopy(date) once per day yourself and slice out each
-    symbol, rather than calling this per-symbol (which would re-fetch the same
-    daily files redundantly).
     """
+    import os
+
     sym = symbol.upper().replace(".NS", "")
     sess = session or _nse_session()
 
     end = datetime.today().date()
     start = end - timedelta(days=years * 365)
 
+    cache_path = None
+    cached_df = pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume", "DeliveryPct"])
+    if cache_dir:
+        os.makedirs(cache_dir, exist_ok=True)
+        cache_path = os.path.join(cache_dir, f"{sym}.csv")
+        if os.path.exists(cache_path):
+            cached_df = pd.read_csv(cache_path, index_col=0, parse_dates=True)
+            print(f"  [{sym}] cache hit: {len(cached_df)} rows already saved, "
+                  f"{cached_df.index.min().date()} to {cached_df.index.max().date()}")
+
     trading_days = [start + timedelta(days=i) for i in range((end - start).days + 1)
                      if (start + timedelta(days=i)).weekday() < 5]
+
+    cached_dates = set(cached_df.index.date) if not cached_df.empty else set()
+    missing_days = [d for d in trading_days if d not in cached_dates]
+
+    print(f"  [{sym}] {len(missing_days)} day(s) to fetch, "
+          f"{len(trading_days) - len(missing_days)} already cached")
 
     rows = []
     failed_days = []
@@ -112,12 +132,11 @@ def fetch_history(symbol: str, years: int = 20, session=None, cache_dir: str = N
 
     def _try_day(d):
         try:
-            bhav = fetch_bhavcopy_any_era(d, session=sess)
-            return bhav
+            return fetch_bhavcopy_any_era(d, session=sess)
         except Exception:
             return None
 
-    for d in trading_days:
+    for d in missing_days:
         bhav = _try_day(d)
         if bhav is None:
             failed_days.append(d)
@@ -162,16 +181,25 @@ def fetch_history(symbol: str, years: int = 20, session=None, cache_dir: str = N
             time.sleep(0.4)
 
     n_fail = len(still_failed)
-    print(f"  [{sym}] fetch summary: {n_ok} days OK, {n_fail} still-failed after retry "
+    print(f"  [{sym}] fetch summary: {n_ok} new days OK, {n_fail} still-failed after retry "
           f"({n_recovered} recovered on retry), {n_no_symbol} days symbol not found in bhavcopy")
 
-    if not rows:
-        return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume", "DeliveryPct"])
+    if rows:
+        new_df = pd.DataFrame(rows).set_index("date").sort_index()
+        new_df.index = pd.to_datetime(new_df.index)
+        combined = pd.concat([cached_df, new_df])
+        combined = combined[~combined.index.duplicated(keep="last")].sort_index()
+    else:
+        combined = cached_df
 
-    df = pd.DataFrame(rows).set_index("date").sort_index()
-    df = df.dropna(subset=["Close", "Volume"])
-    print(f"  [{sym}] usable history: {len(df)} rows, {df.index.min()} to {df.index.max()}")
-    return df
+    if cache_path is not None and rows:
+        combined.to_csv(cache_path)
+        print(f"  [{sym}] cache updated: {len(combined)} total rows saved to {cache_path}")
+
+    combined = combined.dropna(subset=["Close", "Volume"])
+    if not combined.empty:
+        print(f"  [{sym}] usable history: {len(combined)} rows, {combined.index.min()} to {combined.index.max()}")
+    return combined
 
 
 def detect_resistance_breakouts(
