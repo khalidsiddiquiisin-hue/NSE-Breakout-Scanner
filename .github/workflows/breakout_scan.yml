@@ -4,9 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       symbols:
-        description: "Comma-separated symbols (e.g. RELIANCE,TCS,ITC)"
+        description: "Comma-separated symbols (e.g. RELIANCE,TCS,ITC). Ignored if 'universe' is set."
         required: false
         default: "RELIANCE,TCS,TATASTEEL,HDFCBANK,ITC"
+      universe:
+        description: "Scan a whole index instead of a manual list (e.g. NIFTY500, NIFTY50, NIFTY100). Leave blank to use 'symbols' above."
+        required: false
+        default: ""
       years:
         description: "Years of history to pull (use a small number like 1-2 for a quick sanity test)"
         required: false
@@ -34,11 +38,13 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           SCANNER_SYMBOLS: ${{ inputs.symbols }}
+          SCANNER_UNIVERSE: ${{ inputs.universe }}
           SCANNER_YEARS: ${{ inputs.years }}
           PYTHONUNBUFFERED: "1"
         run: python3 -u resistance_breakout_scanner.py
 
       - name: Commit updated cache
+        if: always()   # commit whatever was fetched even if the run above crashed or timed out partway
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
