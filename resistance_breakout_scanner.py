@@ -309,6 +309,43 @@ def detect_resistance_breakouts(
     return pd.DataFrame(results)
 
 
+def fetch_index_constituents(index: str = "NIFTY500", session=None) -> list:
+    """
+    Fetch NSE's official constituent list for a given index, e.g. NIFTY500, NIFTY50,
+    NIFTYMIDCAP150. Returns a list of bare symbols (no .NS suffix).
+    Source: archives.nseindia.com's published index CSVs (same reachable-from-GitHub-
+    Actions domain as the bhavcopy archives -- NOT the blocked interactive API).
+    """
+    slug_map = {
+        "NIFTY500": "ind_nifty500list.csv",
+        "NIFTY50": "ind_nifty50list.csv",
+        "NIFTY100": "ind_nifty100list.csv",
+        "NIFTY200": "ind_nifty200list.csv",
+        "NIFTYMIDCAP150": "ind_niftymidcap150list.csv",
+        "NIFTYSMALLCAP250": "ind_niftysmallcap250list.csv",
+        "NIFTYTOTALMARKET": "ind_niftytotalmarket_list.csv",
+    }
+    filename = slug_map.get(index.upper().replace(" ", ""))
+    if filename is None:
+        raise ValueError(f"Unknown index '{index}'. Known: {list(slug_map)}")
+
+    url = f"https://archives.nseindia.com/content/indices/{filename}"
+    sess = session or _nse_session()
+    resp = sess.get(url, timeout=15)
+    resp.raise_for_status()
+
+    from io import StringIO
+    df = pd.read_csv(StringIO(resp.text))
+    df.columns = [c.strip() for c in df.columns]
+    symbol_col = next((c for c in df.columns if c.strip().lower() == "symbol"), None)
+    if symbol_col is None:
+        raise ValueError(f"Could not find a Symbol column in {url}. Columns: {list(df.columns)}")
+
+    symbols = df[symbol_col].str.strip().str.upper().tolist()
+    print(f"Fetched {len(symbols)} constituents for {index}")
+    return symbols
+
+
 def scan_symbol(symbol: str, years_history: int = 20, session=None, **kwargs) -> pd.DataFrame:
     """
     Fetch history (with delivery%) + detect qualifying breakouts, in one call.
@@ -492,14 +529,26 @@ if __name__ == "__main__":
     # Usage: python3 resistance_breakout_scanner.py SYMBOL1 SYMBOL2 ...
     # Or set env vars SCANNER_SYMBOLS="SYM1,SYM2" and SCANNER_YEARS=3 to override
     # without editing this file (used by the GitHub Actions workflow_dispatch inputs).
-    env_symbols = os.environ.get("SCANNER_SYMBOLS", "").strip()
-    symbols = [s.strip().upper() for s in env_symbols.split(",") if s.strip()] \
-        if env_symbols else (sys.argv[1:] or ["RELIANCE", "TCS", "INFY"])
-    years = int(os.environ.get("SCANNER_YEARS", "20"))
-
-    print(f"Scanning {len(symbols)} symbol(s), {years} year(s) history each: {symbols}")
+    # Or set SCANNER_UNIVERSE="NIFTY500" to scan an entire index's constituents,
+    # fetched automatically from NSE (takes priority over SCANNER_SYMBOLS if both set).
     sess = _nse_session()
 
+    env_universe = os.environ.get("SCANNER_UNIVERSE", "").strip()
+    env_symbols = os.environ.get("SCANNER_SYMBOLS", "").strip()
+    if env_universe:
+        symbols = fetch_index_constituents(env_universe, session=sess)
+    elif env_symbols:
+        symbols = [s.strip().upper() for s in env_symbols.split(",") if s.strip()]
+    else:
+        symbols = sys.argv[1:] or ["RELIANCE", "TCS", "INFY"]
+
+    years = int(os.environ.get("SCANNER_YEARS", "20"))
+
+    print(f"Scanning {len(symbols)} symbol(s), {years} year(s) history each")
+    if len(symbols) <= 20:
+        print(f"Symbols: {symbols}")
+
+    n_qualifying_total = 0
     for sym in symbols:
         print(f"\nScanning {sym} ...")
         try:
@@ -513,4 +562,9 @@ if __name__ == "__main__":
         else:
             print(events.to_string(index=False))
             n_fully_confirmed = int(events["all_conditions_met"].sum())
+            n_qualifying_total += n_fully_confirmed
             print(f"  -> {n_fully_confirmed}/{len(events)} breakout(s) also cleared delivery% >= {MIN_DELIVERY_PCT}")
+
+    if len(symbols) > 1:
+        print(f"\n=== SUMMARY: {n_qualifying_total} fully-qualifying breakout(s) "
+              f"across {len(symbols)} symbol(s) ===")
