@@ -58,7 +58,7 @@ except ImportError:
     requests = None  # only needed for fetch_history() and fetch_nse_delivery_bhavcopy()
 
 # ---------------- Config (tweak here) ----------------
-MIN_RESISTANCE_YEARS = 5
+MIN_RESISTANCE_YEARS = 4.5
 VOLUME_LOOKBACK = 20          # trading days
 VOLUME_SPIKE_MULT = 1.4       # "40% more than last volumes"
 MIN_DELIVERY_PCT = 40.0       # Phase 2
