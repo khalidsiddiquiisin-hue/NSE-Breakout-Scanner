@@ -139,17 +139,23 @@ def fetch_history(symbol: str, years: int = 20, session=None, cache_dir: str = "
     rows = []
     new_nodata_dates = []
     failed_days = []
-    n_ok, n_no_symbol = 0, 0
-
-    def _try_day(d):
-        try:
-            return fetch_bhavcopy_any_era(d, session=sess)
-        except Exception:
-            return None
+    n_ok, n_no_symbol, n_holiday = 0, 0, 0
 
     for d in missing_days:
-        bhav = _try_day(d)
-        if bhav is None:
+        is_holiday = False
+        try:
+            bhav = fetch_bhavcopy_any_era(d, session=sess)
+        except NoDataForDate:
+            new_nodata_dates.append(d)  # confirmed holiday -- cache permanently, never retry
+            n_holiday += 1
+            is_holiday = True
+            bhav = None
+        except Exception:
+            bhav = None
+
+        if is_holiday:
+            pass
+        elif bhav is None:
             failed_days.append(d)
         elif sym in bhav.index:
             r = bhav.loc[sym]
@@ -163,8 +169,9 @@ def fetch_history(symbol: str, years: int = 20, session=None, cache_dir: str = "
             new_nodata_dates.append(d)  # file fetched fine, symbol confirmed absent -- cache this fact
         time.sleep(0.25)
 
-    # Second pass: retry failed days once, in case it was a temporary block that's
-    # since lifted (observed behavior: early-run failures, later-run successes).
+    # Second pass: retry genuinely-failed days once (NOT confirmed holidays -- those
+    # are already cached above and correctly excluded from this retry), in case it
+    # was a temporary block that's since lifted.
     n_recovered = 0
     still_failed = []
     if failed_days:
@@ -175,6 +182,10 @@ def fetch_history(symbol: str, years: int = 20, session=None, cache_dir: str = "
             bhav = None
             try:
                 bhav = fetch_bhavcopy_any_era(d, session=sess2)
+            except NoDataForDate:
+                new_nodata_dates.append(d)
+                n_holiday += 1
+                continue
             except Exception:
                 pass
             if bhav is not None:
@@ -194,8 +205,9 @@ def fetch_history(symbol: str, years: int = 20, session=None, cache_dir: str = "
             time.sleep(0.4)
 
     n_fail = len(still_failed)
-    print(f"  [{sym}] fetch summary: {n_ok} new days OK, {n_fail} still-failed after retry "
-          f"({n_recovered} recovered on retry), {n_no_symbol} days symbol not found in bhavcopy")
+    print(f"  [{sym}] fetch summary: {n_ok} new days OK, {n_holiday} confirmed holiday(s) cached, "
+          f"{n_fail} still-failed after retry ({n_recovered} recovered), "
+          f"{n_no_symbol} days symbol not found in bhavcopy")
 
     if rows:
         new_df = pd.DataFrame(rows).set_index("date").sort_index()
@@ -312,6 +324,13 @@ def scan_symbol(symbol: str, years_history: int = 20, session=None, **kwargs) ->
 _delivery_cache: Dict[str, pd.DataFrame] = {}
 
 
+class NoDataForDate(Exception):
+    """Raised when NSE confirms (via HTTP 404) that no bhavcopy exists for a date --
+    almost always a market holiday. Safe to cache permanently, unlike other failures
+    (network blips, Akamai blocks) which might succeed on a later attempt."""
+    pass
+
+
 def fetch_nse_delivery_bhavcopy(date, session=None) -> pd.DataFrame:
     """
     Fetch NSE's full bhavcopy for a single trading date — this ONE file contains
@@ -323,6 +342,7 @@ def fetch_nse_delivery_bhavcopy(date, session=None) -> pd.DataFrame:
     Returns a DataFrame indexed by symbol with normalized columns:
     OPEN, HIGH, LOW, CLOSE, VOLUME, DELIV_PER.
     Cached per date within a run/process since many symbols share the same day's file.
+    Raises NoDataForDate on a confirmed HTTP 404 (holiday); other errors raise normally.
     """
     if isinstance(date, str):
         date = datetime.strptime(date, "%d-%m-%Y").date()
@@ -336,6 +356,8 @@ def fetch_nse_delivery_bhavcopy(date, session=None) -> pd.DataFrame:
     url = f"https://nsearchives.nseindia.com/products/content/sec_bhavdata_full_{cache_key}.csv"
     sess = session or _nse_session()
     resp = sess.get(url, timeout=15)
+    if resp.status_code == 404:
+        raise NoDataForDate(f"No bhavcopy for {date} (likely a holiday)")
     resp.raise_for_status()
 
     from io import StringIO
@@ -401,6 +423,8 @@ def fetch_legacy_bhavcopy(date, session=None) -> pd.DataFrame:
 
     sess = session or _nse_session()
     resp = sess.get(url, timeout=15)
+    if resp.status_code == 404:
+        raise NoDataForDate(f"No legacy bhavcopy for {date} (likely a holiday)")
     resp.raise_for_status()
 
     with zipfile.ZipFile(BytesIO(resp.content)) as zf:
