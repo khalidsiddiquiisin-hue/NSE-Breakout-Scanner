@@ -108,25 +108,36 @@ def fetch_history(symbol: str, years: int = 20, session=None, cache_dir: str = "
     start = end - timedelta(days=years * 365)
 
     cache_path = None
+    nodata_path = None
     cached_df = pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume", "DeliveryPct"])
+    cached_nodata_dates = set()
     if cache_dir:
         os.makedirs(cache_dir, exist_ok=True)
         cache_path = os.path.join(cache_dir, f"{sym}.csv")
+        nodata_path = os.path.join(cache_dir, f"{sym}_nodata.txt")
         if os.path.exists(cache_path):
             cached_df = pd.read_csv(cache_path, index_col=0, parse_dates=True)
             print(f"  [{sym}] cache hit: {len(cached_df)} rows already saved, "
                   f"{cached_df.index.min().date()} to {cached_df.index.max().date()}")
+        if os.path.exists(nodata_path):
+            with open(nodata_path) as f:
+                cached_nodata_dates = {datetime.strptime(line.strip(), "%Y-%m-%d").date()
+                                        for line in f if line.strip()}
+            print(f"  [{sym}] {len(cached_nodata_dates)} confirmed-no-data day(s) also cached "
+                  f"(e.g. pre-listing) -- will skip re-checking these")
 
     trading_days = [start + timedelta(days=i) for i in range((end - start).days + 1)
                      if (start + timedelta(days=i)).weekday() < 5]
 
     cached_dates = set(cached_df.index.date) if not cached_df.empty else set()
-    missing_days = [d for d in trading_days if d not in cached_dates]
+    already_known = cached_dates | cached_nodata_dates
+    missing_days = [d for d in trading_days if d not in already_known]
 
     print(f"  [{sym}] {len(missing_days)} day(s) to fetch, "
-          f"{len(trading_days) - len(missing_days)} already cached")
+          f"{len(trading_days) - len(missing_days)} already cached/known")
 
     rows = []
+    new_nodata_dates = []
     failed_days = []
     n_ok, n_no_symbol = 0, 0
 
@@ -149,6 +160,7 @@ def fetch_history(symbol: str, years: int = 20, session=None, cache_dir: str = "
             n_ok += 1
         else:
             n_no_symbol += 1
+            new_nodata_dates.append(d)  # file fetched fine, symbol confirmed absent -- cache this fact
         time.sleep(0.25)
 
     # Second pass: retry failed days once, in case it was a temporary block that's
@@ -176,6 +188,7 @@ def fetch_history(symbol: str, years: int = 20, session=None, cache_dir: str = "
                     n_ok += 1
                 else:
                     n_no_symbol += 1
+                    new_nodata_dates.append(d)
             else:
                 still_failed.append(d)
             time.sleep(0.4)
@@ -195,6 +208,12 @@ def fetch_history(symbol: str, years: int = 20, session=None, cache_dir: str = "
     if cache_path is not None and rows:
         combined.to_csv(cache_path)
         print(f"  [{sym}] cache updated: {len(combined)} total rows saved to {cache_path}")
+
+    if nodata_path is not None and new_nodata_dates:
+        all_nodata = cached_nodata_dates | set(new_nodata_dates)
+        with open(nodata_path, "w") as f:
+            f.write("\n".join(d.strftime("%Y-%m-%d") for d in sorted(all_nodata)))
+        print(f"  [{sym}] no-data cache updated: {len(all_nodata)} confirmed-absent day(s) saved to {nodata_path}")
 
     combined = combined.dropna(subset=["Close", "Volume"])
     if not combined.empty:
