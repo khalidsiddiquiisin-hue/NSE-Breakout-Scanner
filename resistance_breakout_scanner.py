@@ -45,6 +45,7 @@ NOTE: This sandbox has no network access to NSE. Run this via GitHub Actions or
 any machine with normal internet access to actually fetch data.
 """
 
+import os
 import time
 from datetime import datetime, timedelta, date
 from typing import Dict, Optional
@@ -360,6 +361,42 @@ def scan_symbol(symbol: str, years_history: int = 20, session=None, **kwargs) ->
 
 _delivery_cache: Dict[str, pd.DataFrame] = {}
 
+# Confirmed holidays (HTTP 404 -- no bhavcopy exists at all that day) are GLOBAL:
+# every symbol shares the same trading calendar, so this must be shared across ALL
+# symbols in a run (in-memory) AND persisted across runs (disk), not per-symbol.
+# This was a real bug in earlier versions: holidays were only cached per-symbol,
+# so every one of 500 symbols independently re-discovered every holiday over the
+# network -- ~500 x 830 wasted requests, enough to blow past GitHub Actions' 6hr cap.
+_known_holidays: set = set()
+_holidays_loaded_from = None
+
+
+def _load_global_holidays(cache_dir: str = "data"):
+    """Load previously-confirmed holidays from disk into the in-memory set. Call once
+    at the start of a run (before processing any symbols)."""
+    global _holidays_loaded_from
+    if not cache_dir:
+        return
+    path = os.path.join(cache_dir, "_holidays.txt")
+    if os.path.exists(path):
+        with open(path) as f:
+            dates = {datetime.strptime(line.strip(), "%Y-%m-%d").date()
+                      for line in f if line.strip()}
+        _known_holidays.update(dates)
+        print(f"Loaded {len(dates)} known holiday(s) from {path}")
+    _holidays_loaded_from = cache_dir
+
+
+def _save_global_holidays(cache_dir: str = "data"):
+    """Persist the in-memory holiday set back to disk. Call once at the end of a run."""
+    if not cache_dir or not _known_holidays:
+        return
+    os.makedirs(cache_dir, exist_ok=True)
+    path = os.path.join(cache_dir, "_holidays.txt")
+    with open(path, "w") as f:
+        f.write("\n".join(d.strftime("%Y-%m-%d") for d in sorted(_known_holidays)))
+    print(f"Saved {len(_known_holidays)} known holiday(s) to {path}")
+
 
 class NoDataForDate(Exception):
     """Raised when NSE confirms (via HTTP 404) that no bhavcopy exists for a date --
@@ -386,6 +423,9 @@ def fetch_nse_delivery_bhavcopy(date, session=None) -> pd.DataFrame:
     elif isinstance(date, datetime):
         date = date.date()
 
+    if date in _known_holidays:
+        raise NoDataForDate(f"Known holiday: {date} (no network call needed)")
+
     cache_key = date.strftime("%d%m%Y")
     if cache_key in _delivery_cache:
         return _delivery_cache[cache_key]
@@ -394,6 +434,7 @@ def fetch_nse_delivery_bhavcopy(date, session=None) -> pd.DataFrame:
     sess = session or _nse_session()
     resp = sess.get(url, timeout=15)
     if resp.status_code == 404:
+        _known_holidays.add(date)
         raise NoDataForDate(f"No bhavcopy for {date} (likely a holiday)")
     resp.raise_for_status()
 
@@ -450,6 +491,9 @@ def fetch_legacy_bhavcopy(date, session=None) -> pd.DataFrame:
     elif isinstance(date, datetime):
         date = date.date()
 
+    if date in _known_holidays:
+        raise NoDataForDate(f"Known holiday: {date} (no network call needed)")
+
     cache_key = "LEGACY_" + date.strftime("%d%m%Y")
     if cache_key in _delivery_cache:
         return _delivery_cache[cache_key]
@@ -461,6 +505,7 @@ def fetch_legacy_bhavcopy(date, session=None) -> pd.DataFrame:
     sess = session or _nse_session()
     resp = sess.get(url, timeout=15)
     if resp.status_code == 404:
+        _known_holidays.add(date)
         raise NoDataForDate(f"No legacy bhavcopy for {date} (likely a holiday)")
     resp.raise_for_status()
 
@@ -548,8 +593,10 @@ if __name__ == "__main__":
     if len(symbols) <= 20:
         print(f"Symbols: {symbols}")
 
+    _load_global_holidays()
+
     n_qualifying_total = 0
-    for sym in symbols:
+    for i, sym in enumerate(symbols):
         print(f"\nScanning {sym} ...")
         try:
             events = scan_symbol(sym, years_history=years, session=sess)
@@ -564,6 +611,13 @@ if __name__ == "__main__":
             n_fully_confirmed = int(events["all_conditions_met"].sum())
             n_qualifying_total += n_fully_confirmed
             print(f"  -> {n_fully_confirmed}/{len(events)} breakout(s) also cleared delivery% >= {MIN_DELIVERY_PCT}")
+
+        # Save holiday knowledge periodically, not just at the end -- protects against
+        # losing it if a very long multi-symbol run gets killed by a timeout partway.
+        if (i + 1) % 20 == 0:
+            _save_global_holidays()
+
+    _save_global_holidays()
 
     if len(symbols) > 1:
         print(f"\n=== SUMMARY: {n_qualifying_total} fully-qualifying breakout(s) "
