@@ -84,7 +84,8 @@ def _nse_session() -> "requests.Session":
     return s
 
 
-def fetch_history(symbol: str, years: int = 20, session=None, cache_dir: str = "data") -> pd.DataFrame:
+def fetch_history(symbol: str, years: int = 20, session=None, cache_dir: str = "data",
+                   retry_failed: bool = True) -> pd.DataFrame:
     """
     Build daily OHLCV (+ delivery%) history for an NSE symbol from NSE's own
     bhavcopy archive — one file per trading day, each covering every symbol.
@@ -172,17 +173,19 @@ def fetch_history(symbol: str, years: int = 20, session=None, cache_dir: str = "
 
     # Second pass: retry genuinely-failed days once (NOT confirmed holidays -- those
     # are already cached above and correctly excluded from this retry), in case it
-    # was a temporary block that's since lifted.
+    # was a temporary block that's since lifted. Skippable via retry_failed=False --
+    # for large multi-symbol batches, a fresh session + cooldown per symbol (just to
+    # chase 1-2 residual days, often just today's not-yet-published file) adds fixed
+    # overhead that multiplies badly at scale for near-zero benefit.
     n_recovered = 0
-    still_failed = []
-    if failed_days:
-        print(f"  [{sym}] retrying {len(failed_days)} failed day(s) with a fresh session...")
-        sess2 = _nse_session()
-        time.sleep(2)  # give any rate limit a moment before hammering it again
+    still_failed = list(failed_days)
+    if failed_days and retry_failed:
+        print(f"  [{sym}] retrying {len(failed_days)} failed day(s)...")
+        still_failed = []
         for d in failed_days:
             bhav = None
             try:
-                bhav = fetch_bhavcopy_any_era(d, session=sess2)
+                bhav = fetch_bhavcopy_any_era(d, session=sess)  # reuse main session, no re-warmup
             except NoDataForDate:
                 new_nodata_dates.append(d)
                 n_holiday += 1
@@ -203,7 +206,7 @@ def fetch_history(symbol: str, years: int = 20, session=None, cache_dir: str = "
                     new_nodata_dates.append(d)
             else:
                 still_failed.append(d)
-            time.sleep(0.4)
+            time.sleep(0.25)
 
     n_fail = len(still_failed)
     print(f"  [{sym}] fetch summary: {n_ok} new days OK, {n_holiday} confirmed holiday(s) cached, "
@@ -347,13 +350,13 @@ def fetch_index_constituents(index: str = "NIFTY500", session=None) -> list:
     return symbols
 
 
-def scan_symbol(symbol: str, years_history: int = 20, session=None, **kwargs) -> pd.DataFrame:
+def scan_symbol(symbol: str, years_history: int = 20, session=None, retry_failed: bool = True, **kwargs) -> pd.DataFrame:
     """
     Fetch history (with delivery%) + detect qualifying breakouts, in one call.
     This is now the complete Phase 1+2 pipeline — delivery% is already included
     since it comes from the same bhavcopy fetch as price/volume.
     """
-    df = fetch_history(symbol, years=years_history, session=session)
+    df = fetch_history(symbol, years=years_history, session=session, retry_failed=retry_failed)
     return detect_resistance_breakouts(df, **kwargs)
 
 
@@ -595,11 +598,21 @@ if __name__ == "__main__":
 
     _load_global_holidays()
 
+    # For large batches, skip the per-symbol retry pass -- chasing 1-2 residual
+    # failed days (often just today's not-yet-published bhavcopy) isn't worth the
+    # fixed overhead multiplied across hundreds of symbols. Small manual batches
+    # still get the thorough retry, since completeness matters more there.
+    retry_failed = len(symbols) <= 20
+    if not retry_failed:
+        print(f"Large batch ({len(symbols)} symbols) -- disabling per-symbol retry "
+              f"pass to avoid multiplying fixed overhead; a handful of residual "
+              f"failed days per symbol is an acceptable tradeoff at this scale.")
+
     n_qualifying_total = 0
     for i, sym in enumerate(symbols):
         print(f"\nScanning {sym} ...")
         try:
-            events = scan_symbol(sym, years_history=years, session=sess)
+            events = scan_symbol(sym, years_history=years, session=sess, retry_failed=retry_failed)
         except Exception as e:
             print(f"  [error] {sym}: {e}")
             continue
