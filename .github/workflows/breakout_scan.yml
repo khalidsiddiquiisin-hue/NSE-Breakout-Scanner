@@ -11,6 +11,14 @@ on:
         description: "Scan a whole index instead of a manual list (e.g. NIFTY500, NIFTY50, NIFTY100). Leave blank to use 'symbols' above."
         required: false
         default: ""
+      offset:
+        description: "For universe scans: skip this many symbols from the start (for chunking, e.g. 0, 150, 300...)"
+        required: false
+        default: "0"
+      limit:
+        description: "For universe scans: only process this many symbols after the offset (e.g. 150). Leave blank for no limit."
+        required: false
+        default: ""
       years:
         description: "Years of history to pull (use a small number like 1-2 for a quick sanity test)"
         required: false
@@ -39,6 +47,8 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           SCANNER_SYMBOLS: ${{ inputs.symbols }}
           SCANNER_UNIVERSE: ${{ inputs.universe }}
+          SCANNER_OFFSET: ${{ inputs.offset }}
+          SCANNER_LIMIT: ${{ inputs.limit }}
           SCANNER_YEARS: ${{ inputs.years }}
           PYTHONUNBUFFERED: "1"
         run: python3 -u resistance_breakout_scanner.py
@@ -53,3 +63,4 @@ jobs:
             git commit -m "Update cached bhavcopy data [skip ci]"
             git push
           )
+
