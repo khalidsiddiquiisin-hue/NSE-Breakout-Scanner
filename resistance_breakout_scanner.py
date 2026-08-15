@@ -585,6 +585,14 @@ if __name__ == "__main__":
     env_symbols = os.environ.get("SCANNER_SYMBOLS", "").strip()
     if env_universe:
         symbols = fetch_index_constituents(env_universe, session=sess)
+        offset = int(os.environ.get("SCANNER_OFFSET", "0") or "0")
+        limit_raw = os.environ.get("SCANNER_LIMIT", "").strip()
+        limit = int(limit_raw) if limit_raw else None
+        if offset or limit:
+            end_idx = (offset + limit) if limit else None
+            symbols = symbols[offset:end_idx]
+            print(f"Sliced to offset={offset}, limit={limit}: {len(symbols)} symbol(s) "
+                  f"(index {offset} to {offset + len(symbols) - 1})")
     elif env_symbols:
         symbols = [s.strip().upper() for s in env_symbols.split(",") if s.strip()]
     else:
