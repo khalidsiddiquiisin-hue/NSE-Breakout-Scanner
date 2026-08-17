@@ -617,13 +617,20 @@ if __name__ == "__main__":
               f"failed days per symbol is an acceptable tradeoff at this scale.")
 
     n_qualifying_total = 0
+    run_start = time.time()
     for i, sym in enumerate(symbols):
-        print(f"\nScanning {sym} ...")
+        sym_start = time.time()
+        print(f"\n[{i+1}/{len(symbols)}] Scanning {sym} ... "
+              f"(elapsed so far: {(sym_start - run_start)/60:.1f} min, "
+              f"cache: {len(_delivery_cache)} day(s) in memory, "
+              f"{len(_known_holidays)} known holiday(s))")
         try:
             events = scan_symbol(sym, years_history=years, session=sess, retry_failed=retry_failed)
         except Exception as e:
             print(f"  [error] {sym}: {e}")
             continue
+        sym_elapsed = time.time() - sym_start
+        print(f"  [{sym}] took {sym_elapsed:.1f}s")
 
         if events.empty:
             print("  No qualifying price+volume breakouts found with current thresholds.")
@@ -637,6 +644,11 @@ if __name__ == "__main__":
         # losing it if a very long multi-symbol run gets killed by a timeout partway.
         if (i + 1) % 20 == 0:
             _save_global_holidays()
+            total_elapsed = (time.time() - run_start) / 60
+            avg_per_symbol = total_elapsed / (i + 1)
+            print(f"\n=== PROGRESS: {i+1}/{len(symbols)} done, "
+                  f"{total_elapsed:.1f} min elapsed, {avg_per_symbol:.2f} min/symbol avg, "
+                  f"projected total: {avg_per_symbol * len(symbols):.0f} min ===\n")
 
     _save_global_holidays()
 
