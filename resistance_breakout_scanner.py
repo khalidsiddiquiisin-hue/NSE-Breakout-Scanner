@@ -169,7 +169,11 @@ def fetch_history(symbol: str, years: int = 20, session=None, cache_dir: str = "
         else:
             n_no_symbol += 1
             new_nodata_dates.append(d)  # file fetched fine, symbol confirmed absent -- cache this fact
-        time.sleep(0.25)
+        # NOTE: no unconditional sleep here anymore -- politeness delays now live
+        # inside the fetch functions themselves, only on the actual-network-request
+        # path. A blanket sleep here was firing even on instant in-memory cache
+        # hits, adding ~2600 x 0.25s = ~11 minutes of pure dead time per symbol
+        # regardless of how much was actually cached -- the real bottleneck all along.
 
     # Second pass: retry genuinely-failed days once (NOT confirmed holidays -- those
     # are already cached above and correctly excluded from this retry), in case it
@@ -436,6 +440,7 @@ def fetch_nse_delivery_bhavcopy(date, session=None) -> pd.DataFrame:
     url = f"https://nsearchives.nseindia.com/products/content/sec_bhavdata_full_{cache_key}.csv"
     sess = session or _nse_session()
     resp = sess.get(url, timeout=15)
+    time.sleep(0.2)  # politeness delay -- only reached on an ACTUAL network request, never on cache hits
     if resp.status_code == 404:
         _known_holidays.add(date)
         raise NoDataForDate(f"No bhavcopy for {date} (likely a holiday)")
@@ -507,6 +512,7 @@ def fetch_legacy_bhavcopy(date, session=None) -> pd.DataFrame:
 
     sess = session or _nse_session()
     resp = sess.get(url, timeout=15)
+    time.sleep(0.2)  # politeness delay -- only reached on an ACTUAL network request, never on cache hits
     if resp.status_code == 404:
         _known_holidays.add(date)
         raise NoDataForDate(f"No legacy bhavcopy for {date} (likely a holiday)")
