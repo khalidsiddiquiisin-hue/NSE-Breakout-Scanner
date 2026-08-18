@@ -292,6 +292,26 @@ def detect_resistance_breakouts(
                         deliv_pct = deliv[i]
                         deliv_ok = (deliv_pct is not None and not pd.isna(deliv_pct)
                                     and deliv_pct >= min_delivery_pct)
+
+                        # Split/bonus safeguard: NSE enforces daily circuit limits (typically
+                        # 5-20%), so any single-day close-to-close move bigger than ~25% almost
+                        # certainly isn't organic trading -- it's a corporate action. If one
+                        # occurred anywhere between the resistance date and the breakout, the
+                        # "resistance" being compared is on a different price scale entirely
+                        # (pre- vs post-split), making the whole breakout signal an artifact,
+                        # not a real one. Flag it rather than silently treating it as valid.
+                        window_closes = closes[ath_idx:i + 1]
+                        daily_ratios = window_closes[1:] / window_closes[:-1]
+                        big_move_mask = (daily_ratios < 0.8) | (daily_ratios > 1.25)
+                        possible_split = bool(big_move_mask.any())
+                        split_note = None
+                        if possible_split:
+                            jump_idx = ath_idx + 1 + int(np.argmax(big_move_mask))
+                            split_note = (f"{dates[jump_idx - 1].date()} -> {dates[jump_idx].date()}: "
+                                          f"{window_closes[jump_idx - ath_idx - 1]:.2f} -> "
+                                          f"{window_closes[jump_idx - ath_idx]:.2f} "
+                                          f"({daily_ratios[jump_idx - ath_idx - 1]:.2f}x)")
+
                         results.append({
                             "breakout_date": date.date() if hasattr(date, "date") else date,
                             "breakout_close": round(float(close), 2),
@@ -305,7 +325,9 @@ def detect_resistance_breakouts(
                             "zone_resistance": round(float(zone_hi), 2),
                             "delivery_pct": None if deliv_pct is None or pd.isna(deliv_pct) else round(float(deliv_pct), 2),
                             "delivery_ok": bool(deliv_ok),
-                            "all_conditions_met": bool(deliv_ok),
+                            "possible_split_or_bonus": possible_split,
+                            "split_detail": split_note,
+                            "all_conditions_met": bool(deliv_ok and not possible_split),
                         })
 
         # update running ATH AFTER evaluating today (ATH known as of "yesterday" when checking breakout)
