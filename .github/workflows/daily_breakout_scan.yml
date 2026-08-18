@@ -1,0 +1,41 @@
+name: Daily NSE Breakout Scan
+
+on:
+  workflow_dispatch: {}   # triggered daily by cron-job.org via the GitHub API
+
+permissions:
+  contents: write   # needed to commit the data/ cache back to the repo
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install pandas numpy requests
+
+      - name: Run scanner (full Nifty 500, alerts on new breakouts)
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          SCANNER_UNIVERSE: "NIFTY500"
+          SCANNER_YEARS: "10"
+          PYTHONUNBUFFERED: "1"
+        run: python3 -u resistance_breakout_scanner.py
+
+      - name: Commit updated cache
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/
+          git diff --staged --quiet && echo "No cache changes to commit" || (
+            git commit -m "Daily cache + alert update [skip ci]"
+            git push
+          )
