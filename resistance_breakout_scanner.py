@@ -427,6 +427,63 @@ def _save_global_holidays(cache_dir: str = "data"):
     print(f"Saved {len(_known_holidays)} known holiday(s) to {path}")
 
 
+# ---------------- Phase 3: Discord alerts ----------------
+
+_alerted_breakouts: set = set()  # in-memory "symbol|breakout_date" keys, this run
+
+
+def _load_alerted_breakouts(cache_dir: str = "data"):
+    """Load the set of breakouts already alerted on, so re-runs don't spam Discord
+    with the same historical breakout every single day. Call once at run start."""
+    if not cache_dir:
+        return
+    path = os.path.join(cache_dir, "_alerted.txt")
+    if os.path.exists(path):
+        with open(path) as f:
+            keys = {line.strip() for line in f if line.strip()}
+        _alerted_breakouts.update(keys)
+        print(f"Loaded {len(keys)} previously-alerted breakout(s) from {path}")
+
+
+def _save_alerted_breakouts(cache_dir: str = "data"):
+    """Persist the alerted-breakouts set back to disk."""
+    if not cache_dir or not _alerted_breakouts:
+        return
+    os.makedirs(cache_dir, exist_ok=True)
+    path = os.path.join(cache_dir, "_alerted.txt")
+    with open(path, "w") as f:
+        f.write("\n".join(sorted(_alerted_breakouts)))
+
+
+def send_discord_alert(webhook_url: str, symbol: str, row: dict) -> bool:
+    """
+    Send a Discord alert for a single qualifying breakout via webhook.
+    Returns True if sent successfully (or skipped because no webhook configured
+    -- treated as a no-op success, not an error). Never raises -- a Discord
+    failure shouldn't crash the scan.
+    """
+    if not webhook_url:
+        return True  # no webhook configured -- silently skip, not an error
+    if requests is None:
+        print("  [warn] requests not installed, cannot send Discord alert")
+        return False
+
+    msg = (
+        f"🚨 **Breakout: {symbol}**\n"
+        f"Date: {row['breakout_date']}  |  Close: ₹{row['breakout_close']}\n"
+        f"Resistance: ₹{row['prior_resistance']} (set {row['resistance_set_on']}, "
+        f"{row['resistance_age_years']}yr old)\n"
+        f"Volume: {row['volume_ratio']}x avg  |  Delivery%: {row['delivery_pct']}%\n"
+    )
+    try:
+        resp = requests.post(webhook_url, json={"content": msg}, timeout=10)
+        resp.raise_for_status()
+        return True
+    except Exception as e:
+        print(f"  [warn] Discord alert failed for {symbol}: {e}")
+        return False
+
+
 class NoDataForDate(Exception):
     """Raised when NSE confirms (via HTTP 404) that no bhavcopy exists for a date --
     almost always a market holiday. Safe to cache permanently, unlike other failures
@@ -627,12 +684,14 @@ if __name__ == "__main__":
         symbols = sys.argv[1:] or ["RELIANCE", "TCS", "INFY"]
 
     years = int(os.environ.get("SCANNER_YEARS", "20"))
+    discord_webhook = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
 
     print(f"Scanning {len(symbols)} symbol(s), {years} year(s) history each")
     if len(symbols) <= 20:
         print(f"Symbols: {symbols}")
 
     _load_global_holidays()
+    _load_alerted_breakouts()
 
     # For large batches, skip the per-symbol retry pass -- chasing 1-2 residual
     # failed days (often just today's not-yet-published bhavcopy) isn't worth the
@@ -668,10 +727,21 @@ if __name__ == "__main__":
             n_qualifying_total += n_fully_confirmed
             print(f"  -> {n_fully_confirmed}/{len(events)} breakout(s) also cleared delivery% >= {MIN_DELIVERY_PCT}")
 
-        # Save holiday knowledge periodically, not just at the end -- protects against
-        # losing it if a very long multi-symbol run gets killed by a timeout partway.
+            for _, row in events[events["all_conditions_met"] == True].iterrows():
+                alert_key = f"{sym}|{row['breakout_date']}"
+                if alert_key in _alerted_breakouts:
+                    continue
+                sent = send_discord_alert(discord_webhook, sym, row.to_dict())
+                if sent:
+                    _alerted_breakouts.add(alert_key)
+                    if discord_webhook:
+                        print(f"  [discord] sent alert for {sym} {row['breakout_date']}")
+
+        # Save holiday + alert knowledge periodically, not just at the end -- protects
+        # against losing it if a very long multi-symbol run gets killed by a timeout partway.
         if (i + 1) % 20 == 0:
             _save_global_holidays()
+            _save_alerted_breakouts()
             total_elapsed = (time.time() - run_start) / 60
             avg_per_symbol = total_elapsed / (i + 1)
             print(f"\n=== PROGRESS: {i+1}/{len(symbols)} done, "
@@ -679,6 +749,7 @@ if __name__ == "__main__":
                   f"projected total: {avg_per_symbol * len(symbols):.0f} min ===\n")
 
     _save_global_holidays()
+    _save_alerted_breakouts()
 
     if len(symbols) > 1:
         print(f"\n=== SUMMARY: {n_qualifying_total} fully-qualifying breakout(s) "
