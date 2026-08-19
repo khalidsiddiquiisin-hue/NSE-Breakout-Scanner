@@ -63,6 +63,10 @@ MIN_RESISTANCE_YEARS = 4.5
 VOLUME_LOOKBACK = 20          # trading days
 VOLUME_SPIKE_MULT = 1.4       # "40% more than last volumes"
 MIN_DELIVERY_PCT = 40.0       # Phase 2
+MIN_BODY_ABOVE_RESISTANCE = 0.4   # candle body: >=40% of body must sit above resistance
+MAX_UPPER_WICK_RATIO = 0.5    # ASSUMPTION (slide gave no exact number): upper wick must be
+                               # <= 50% of the candle body size. Adjust if you have a specific
+                               # number in mind -- this is my best-guess default, not from the slide.
 
 
 _NSE_HEADERS = {
@@ -247,6 +251,8 @@ def detect_resistance_breakouts(
     volume_lookback: int = VOLUME_LOOKBACK,
     volume_spike_mult: float = VOLUME_SPIKE_MULT,
     min_delivery_pct: float = MIN_DELIVERY_PCT,
+    min_body_above_resistance: float = MIN_BODY_ABOVE_RESISTANCE,
+    max_upper_wick_ratio: float = MAX_UPPER_WICK_RATIO,
 ) -> pd.DataFrame:
     """
     Walk the price series day by day, tracking the running ATH and the date it was set.
@@ -263,6 +269,7 @@ def detect_resistance_breakouts(
     """
     df = df.sort_index().copy()
     dates = df.index
+    opens = df["Open"].values
     closes = df["Close"].values
     volumes = df["Volume"].values
     lows = df["Low"].values
@@ -292,6 +299,31 @@ def detect_resistance_breakouts(
                         deliv_pct = deliv[i]
                         deliv_ok = (deliv_pct is not None and not pd.isna(deliv_pct)
                                     and deliv_pct >= min_delivery_pct)
+
+                        # Candle body rule: at least min_body_above_resistance (40%) of the
+                        # candle's body must sit above the resistance line, showing conviction
+                        # rather than a weak close that barely scraped over the line.
+                        open_ = opens[i]
+                        body_top = max(open_, close)
+                        body_bottom = min(open_, close)
+                        body_height = body_top - body_bottom
+                        if body_height > 0:
+                            overlap_above_resistance = max(0.0, body_top - max(ath, body_bottom))
+                            body_pct_above = overlap_above_resistance / body_height
+                        else:
+                            body_pct_above = 1.0 if body_top > ath else 0.0
+                        body_ok = body_pct_above >= min_body_above_resistance
+
+                        # Upper wick rule: ASSUMPTION (no exact number was specified) -- the
+                        # upper wick (High - top of body) should not exceed max_upper_wick_ratio
+                        # x the body size, indicating buyers held the close near the high
+                        # rather than getting rejected. Adjust MAX_UPPER_WICK_RATIO if you have
+                        # a specific threshold in mind.
+                        upper_wick = highs[i] - body_top
+                        if body_height > 0:
+                            wick_ok = upper_wick <= max_upper_wick_ratio * body_height
+                        else:
+                            wick_ok = upper_wick <= max_upper_wick_ratio * close  # degenerate doji case
 
                         # Split/bonus safeguard: NSE enforces daily circuit limits (typically
                         # 5-20%), so any single-day close-to-close move bigger than ~25% almost
@@ -325,9 +357,12 @@ def detect_resistance_breakouts(
                             "zone_resistance": round(float(zone_hi), 2),
                             "delivery_pct": None if deliv_pct is None or pd.isna(deliv_pct) else round(float(deliv_pct), 2),
                             "delivery_ok": bool(deliv_ok),
+                            "body_pct_above_resistance": round(float(body_pct_above), 2),
+                            "body_ok": bool(body_ok),
+                            "upper_wick_ok": bool(wick_ok),
                             "possible_split_or_bonus": possible_split,
                             "split_detail": split_note,
-                            "all_conditions_met": bool(deliv_ok and not possible_split),
+                            "all_conditions_met": bool(deliv_ok and body_ok and wick_ok and not possible_split),
                         })
 
         # update running ATH AFTER evaluating today (ATH known as of "yesterday" when checking breakout)
