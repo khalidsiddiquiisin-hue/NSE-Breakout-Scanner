@@ -1,7 +1,12 @@
 name: List Qualifying Breakouts
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      recent_days:
+        description: "Only show breakouts from the last N days (0 = full history)"
+        required: false
+        default: "30"
 
 jobs:
   list:
@@ -13,8 +18,12 @@ jobs:
           python-version: "3.11"
       - run: pip install pandas numpy
       - run: python3 -u list_qualifying_breakouts.py
+        env:
+          RECENT_DAYS: ${{ inputs.recent_days }}
       - name: Upload results as artifact
         uses: actions/upload-artifact@v4
         with:
           name: qualifying-breakouts
-          path: qualifying_breakouts.csv
+          path: |
+            qualifying_breakouts.csv
+            qualifying_breakouts_full.csv
